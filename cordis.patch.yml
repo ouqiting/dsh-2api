@@ -1,0 +1,14 @@
+# EPSE tool-call regeneration guard — DSH bundle patch.
+# Inserts the plugin row into the profile composition. With no `config`, the
+# guard applies to ALL agents (targetProviders empty) and forces at most two
+# regenerations per step (maxRegenerationsPerTurn: 2).
+#
+# Optional per-deployment overrides:
+#   config:
+#     maxRegenerationsPerTurn: 2
+#     targetProviders: []        # e.g. [ 'ds2api', 'my-model' ] to narrow scope
+
+- insert:
+    - id: epse-regeneration-guard
+      name: '@ds2api/dsh-epse-regeneration-guard'
+    
