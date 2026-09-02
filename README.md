@@ -15,6 +15,52 @@
 - `llm/retry` 会让会话 UI 对该 step 的 assistant 节点执行 `resetForRetry`（清空 blocks 并置为 hidden），所以坏回复从对话中消失，重生成的回复渲染在它原来的位置。
 - 该 step 会多出一行「已重试模型请求」的 retry 提示行，附带失败原因。这是 DSH 原生的重试呈现，也是这次重生成留下的唯一痕迹。
 
+
+## 安装
+
+从 GitHub 仓库安装（需 dsh 命令行）：
+
+```bash
+dsh plugin --profile web add github:ouqiting/dsh-2api
+```
+
+或从本地副本安装：
+
+```bash
+dsh plugin --profile web add ./<path-to>/dsh-2api
+```
+
+装完重启dsh后即生效。
+
+
+可选：若某个部署想为这两个参数钉一个组合层 base（例如收窄到特定 provider，且不希望依赖用户设置），在 profile 的 `cordis.patch.yml` 里覆盖该行的 `config`：
+
+```yaml
+- id: epse-regeneration-guard
+  config:
+    maxRegenerationsPerTurn: 2
+    targetProviders: [ 'ds2api' ]
+```
+
+用户在 UI 里保存的值仍然覆盖这个 base。
+
+
+## 配置
+
+| 字段 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `targetProviders` | `string[]` | `[]` | 限定命中的 provider / model 路由。**留空 = 对所有 agent 生效。** |
+| `maxRegenerationsPerTurn` | `number` | `2` | 每个 step 最多强制重生成次数，防死循环。 |
+
+
+## 用户设置（插件配置页）
+
+插件自带一个设置卡片，显示在 **设置 → 插件 → 插件配置** 页（与「终端」「Agent 循环」「网页搜索」并列）。卡片提供两个输入框，保存后写入 `~/.dsh/settings.yaml` 并在下次请求立即生效（无需重启）：
+
+
+`cordis.patch.yml` 里的 `config` 只是**组合层 base**；用户在 UI 里保存的值会覆盖它，留空并保存则恢复继承 base / 默认值。
+
+
 ## 检测规则
 
 文本中**同时存在**以下两者即判定命中（经归一化：全角形式如 `＜`、`ＥＰＳＥ` 经 NFKC 归一到 ASCII，再 lowercase 处理大小写）：
@@ -29,53 +75,13 @@
 只有普通的循环内会话请求会被守护，以下一律原样放行：
 
 - `purpose` 非空的辅助调用（compaction、会话标题）；
-- 非 `markAgentLoopRequest` 的手搭一次性调用；
+- 手搭的一次性调用 —— 判定见下文《如何识别循环请求》；
 - 找不到打开中 step 的请求（没有可重试的位置）；
 - `targetProviders` 未覆盖的路由；
 - `reason.kind` 不是 `stop` 的 finish —— `tool-calls` 说明模型**确实**发起了原生调用（格式正确，不是本插件的事），而已失败、已中止、被 max-tokens 截断的尝试各自保留自己的结局与恢复归属。
 
 **防死循环**：按 `(session, turn, step)` 计数，每步最多强制失败 `maxRegenerationsPerTurn` 次（默认 2）。预算耗尽后坏回复正常落地，而不是让该轮永远失败。
 
-## 配置
-
-| 字段 | 类型 | 默认 | 说明 |
-|---|---|---|---|
-| `targetProviders` | `string[]` | `[]` | 限定命中的 provider / model 路由。**留空 = 对所有 agent 生效。** |
-| `maxRegenerationsPerTurn` | `number` | `2` | 每个 step 最多强制重生成次数，防死循环。 |
-
-`config` 仅在作为 bundle 行挂载时传入。
-
-## 为什么不再用「删除 + 重发」
-
-- **表层 `replace` 只影响模型，不影响前端。** 前端会话不折叠 `foldSurface`；它的每个消息 Definition 都要求 `isAppendSurfaceEvent`（即 `surfaceOp === 'append'`）。替换节点因此**不匹配任何 chat Definition**，而原来那条 append 来源的 `assistant/message` 仍持有自己的节点继续渲染。DSH 明确写下了这个意图（`dsh-session/surface.d.ts`）：*"replacement copies stay model-only"* —— 已落地的替换若真能擦除历史，就会抹掉用户已经看到的对话。引擎甚至禁止撤回已物化节点。
-- **`agent.steer()` 必然产生第二个用户气泡。** steer 把消息放进 next-step inbox，循环在步边界把它作为 `user/message` 追加；`source.kind === 'user'` 的消息由 `UserMessageNodeView` 渲染成右对齐气泡（分类为 `steering`）。没有任何按内容去重的机制，消息 id 每次都是新的。
-
-新方案让两个症状同时消失：坏回复根本不落地（无需删除），重试不携带新消息（无重复指令）。
-
-## 安装
-
-从 GitHub 仓库安装（需 dsh 命令行）：
-
-```bash
-dsh plugin --profile web add github:ouqiting/dsh-2api
-```
-
-Alternatively install from a local copy:
-
-```bash
-dsh plugin --profile web add ./<path-to>/dsh-2api
-```
-
-然后将其加入 profile 的 `dsh.profile.bundles`（或补丁层），例如：
-
-```yaml
-- insert:
-    - id: epse-regeneration-guard
-      name: '@ds2api/dsh-epse-regeneration-guard'
-      config:
-        maxRegenerationsPerTurn: 2
-        targetProviders: []
-```
 
 ## Token 与缓存影响
 
@@ -88,7 +94,8 @@ dsh plugin --profile web add ./<path-to>/dsh-2api
 node test.mjs
 ```
 
-用真实 `Session`（表层与不变量规则原样生效）加最小假 Cordis context 驱动两个 listener，覆盖：坏回复转为被认领的请求失败并写下持久重试记录、干净回复与外部失败码原样放行、每步预算封顶、`targetProviders` 收窄范围。
+用真实 `Session`（表层与不变量规则原样生效）加最小假 Cordis context 驱动两个 listener，覆盖：坏回复转为被认领的请求失败并写下持久重试记录、干净回复与外部失败码原样放行、每步预算封顶、`targetProviders` 收窄范围、以及辅助调用 / 未冻结 / 手搭消息列表 / 无 session / 无打开 step 的请求原样放行。
+
 
 ## 已知限制
 

@@ -8,12 +8,21 @@
  *  2. the guard claims that failure and returns `{ kind: 'retry' }`, recording
  *     the `llm/retry` / `llm/retry-started` pair the UI resets the step on;
  *  3. a clean reply passes through untouched;
- *  4. the per-step budget stops a second forced failure.
+ *  4. the per-step budget stops a second forced failure;
+ *  5. requests that are NOT ordinary in-loop conversation calls pass through.
+ *
+ * Deliberately does NOT import `markAgentLoopRequest`: that marker is a WeakSet
+ * private to one dsh-llm module instance, and a path-installed plugin resolves
+ * its own copy of dsh-llm. Marking a request here would only prove the test can
+ * talk to itself — the exact blind spot that let a guard consulting
+ * `isAgentLoopRequest` ship while never firing in production. The requests below
+ * are shaped the way dsh-agent-loop shapes them (deep-frozen, messages are the
+ * session's derived history) and carry no marker at all.
  */
 
 import assert from 'node:assert/strict';
 import { Session, SessionId } from '@deepseek-ai/dsh-session';
-import { markAgentLoopRequest, createUserMessage } from '@deepseek-ai/dsh-llm';
+import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { apply } from './index.js';
 
 /** Collect the plugin's listeners without a real Cordis fiber. */
@@ -26,6 +35,10 @@ function fakeContext(session) {
       listeners[event].push(listener);
       return () => {};
     },
+    // No settings service is mounted here, so Cordis-style `inject` must accept
+    // the registration and never run its callback — exactly the production path
+    // when `dsh-settings` is absent, which keeps installSettingsSection inert.
+    inject: () => () => {},
   };
   return { ctx, listeners };
 }
@@ -45,15 +58,19 @@ function openTurnAndStep(session, turn, step) {
   });
 }
 
-function request(session) {
-  return markAgentLoopRequest(
-    Object.freeze({
-      provider: 'ds2api',
-      model: 'test-model',
-      messages: session.deriveMessages(),
-      sessionId: session.id,
-    }),
-  );
+/**
+ * One request shaped exactly as dsh-agent-loop shapes it: deep-frozen, naming
+ * its session, and carrying that session's derived history verbatim. No
+ * process-local marker — the guard must recognize it from these facts alone.
+ */
+function request(session, overrides = {}) {
+  return Object.freeze({
+    provider: 'ds2api',
+    model: 'test-model',
+    messages: session.deriveMessages(),
+    sessionId: session.id,
+    ...overrides,
+  });
 }
 
 async function drain(iterable) {
@@ -139,7 +156,7 @@ async function* stream(chunks) {
   );
   assert.equal(session.deriveMessages().length, 1, 'model history keeps only the user request');
 
-  console.log('ok  framed reply becomes a claimed request failure and a durable retry');
+  console.log('ok  an UNMARKED loop-shaped request is guarded: claimed failure + durable retry');
 }
 
 // ----------------------------------------------------------------- clean reply
@@ -256,6 +273,81 @@ async function* stream(chunks) {
   assert.equal(chunks.at(-1).reason.kind, 'stop', 'an out-of-scope route is not guarded');
 
   console.log('ok  targetProviders narrows the guard to declared routes');
+}
+
+// ------------------------------------------ requests that are not loop calls
+{
+  const session = Session.create(SessionId('sess-not-loop'));
+  const { ctx, listeners } = fakeContext(session);
+  apply(ctx, {});
+  openTurnAndStep(session, 1, 1);
+  const guardStream = listeners['llm/stream'][0];
+
+  const passesThrough = async (label, options) => {
+    const chunks = await drain(guardStream(options, () => stream(framedChunks)));
+    assert.equal(chunks.at(-1).reason.kind, 'stop', label);
+  };
+
+  // An auxiliary call: compaction and session titles own their own recovery.
+  await passesThrough(
+    'a request with a purpose is not guarded',
+    request(session, { purpose: 'compaction' }),
+  );
+  // A hand-built one-shot: not frozen, so not a loop-assembled request.
+  await passesThrough('an unfrozen request is not guarded', {
+    provider: 'ds2api',
+    model: 'test-model',
+    messages: session.deriveMessages(),
+    sessionId: session.id,
+  });
+  // A hand-built message list: same shape, but not this session's history.
+  await passesThrough(
+    'a request whose messages are not the derived history is not guarded',
+    request(session, {
+      messages: [
+        createUserMessage({ content: [{ type: 'text', text: 'hi' }], source: { kind: 'user' } }),
+      ],
+    }),
+  );
+  // No session named at all: nothing to locate a retry position in.
+  await passesThrough('a sessionless request is not guarded', {
+    ...request(session),
+    sessionId: undefined,
+  });
+
+  // The comparison is element-wise, so a fresh array over the same shared
+  // frozen messages remains the derived history and stays guarded.
+  const copied = await drain(
+    guardStream(request(session, { messages: [...session.deriveMessages()] }), () =>
+      stream(framedChunks),
+    ),
+  );
+  assert.equal(
+    copied.at(-1).reason.failure?.code,
+    'EPSE_TOOL_CALL_FRAME',
+    'a re-wrapped derived history is still the derived history',
+  );
+
+  console.log('ok  auxiliary, unfrozen, hand-built and sessionless requests pass through');
+}
+
+// -------------------------------------- no open step means no retry position
+{
+  const session = Session.create(SessionId('sess-no-step'));
+  const { ctx, listeners } = fakeContext(session);
+  apply(ctx, {});
+  openTurnAndStep(session, 1, 1);
+  session.append('step/end', { turn: 1, step: 1 });
+
+  const guardStream = listeners['llm/stream'][0];
+  const chunks = await drain(guardStream(request(session), () => stream(framedChunks)));
+  assert.equal(
+    chunks.at(-1).reason.kind,
+    'stop',
+    'outside an open step there is no position to regenerate at',
+  );
+
+  console.log('ok  a request outside an open step passes through');
 }
 
 console.log('\nall checks passed');

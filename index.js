@@ -26,9 +26,16 @@
  *
  * Detection scope: ONLY model-generated text chunks. It never inspects written
  * files, tool results, tool arguments, reasoning, or log-only events.
+ *
+ * Eligibility is judged from request DATA, never from dsh-llm's process-local
+ * `isAgentLoopRequest` marker — see {@link apply}'s `eligible`. A plugin
+ * installed by path resolves its own dsh-llm copy, so that marker's WeakSet is
+ * not the one the loop wrote to and the predicate is false for every real
+ * request.
  */
 
-import { isAgentLoopRequest } from '@deepseek-ai/dsh-llm';
+import z from '@deepseek-ai/schemastery';
+import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings';
 
 export const name = 'epse-regeneration-guard';
 export const inject = ['sessions', 'agents'];
@@ -42,15 +49,42 @@ const FAILURE_MESSAGE = 'model emitted an EPSE tool-call frame as text instead o
 /** Forced regenerations allowed per step when the config does not say otherwise. */
 const DEFAULT_MAX_PER_STEP = 2;
 
+/** User-editable settings namespace for the two knobs (插件配置 page). */
+const SETTINGS_NAMESPACE = settingsNamespace('epse-regeneration-guard');
+/** Schema of the user-owned section, layered over the composition entry. */
+const SETTINGS_SCHEMA = z.object({
+  maxRegenerationsPerTurn: z.number().step(1).min(1).default(DEFAULT_MAX_PER_STEP),
+  targetProviders: z.array(z.string()).default([]),
+});
+
 export function apply(ctx, config) {
-  const cfg = config || {};
-  // Provider/model routes to restrict to; empty set = apply to ALL agents.
-  const targets = new Set(Array.isArray(cfg.targetProviders) ? cfg.targetProviders : []);
-  // Max forced regenerations per (session, turn, step) to avoid infinite loops.
-  const maxPerStep =
-    typeof cfg.maxRegenerationsPerTurn === 'number' && cfg.maxRegenerationsPerTurn >= 1
-      ? Math.floor(cfg.maxRegenerationsPerTurn)
-      : DEFAULT_MAX_PER_STEP;
+  const entry = config || {};
+  // Composition entry stays the default source; `installSettingsSection` swaps
+  // in a resolved-settings thunk once a settings service is mounted.
+  let configSource = () => entry;
+
+  /** Resolve the live knobs from the current source (entry or user settings). */
+  const effectiveConfig = () => {
+    const cfg = configSource() || {};
+    return {
+      // Provider/model routes to restrict to; empty set = apply to ALL agents.
+      targets: new Set(Array.isArray(cfg.targetProviders) ? cfg.targetProviders : []),
+      // Max forced regenerations per (session, turn, step) to avoid infinite loops.
+      maxPerStep:
+        typeof cfg.maxRegenerationsPerTurn === 'number' && cfg.maxRegenerationsPerTurn >= 1
+          ? Math.floor(cfg.maxRegenerationsPerTurn)
+          : DEFAULT_MAX_PER_STEP,
+    };
+  };
+
+  // Expose the knobs as a user-editable settings section so the 插件配置 page
+  // can render a card for them; the base layer is this composition entry.
+  installSettingsSection(ctx, SETTINGS_NAMESPACE, SETTINGS_SCHEMA, entry, {
+    setSource: (current) => {
+      configSource = current;
+    },
+    onChange: () => {},
+  });
 
   /** session -> Map<`turn:step`, forced failures already injected>. */
   const forced = new WeakMap();
@@ -65,10 +99,13 @@ export function apply(ctx, config) {
     return /<\|?epse/.test(t) && /<\/\|?epse/.test(t);
   };
 
-  const routeInScope = (provider, model) =>
-    targets.size === 0 || targets.has(provider) || targets.has(model);
+  const routeInScope = (provider, model) => {
+    const { targets } = effectiveConfig();
+    return targets.size === 0 || targets.has(provider) || targets.has(model);
+  };
 
   const agentInScope = (agent) => {
+    const { targets } = effectiveConfig();
     if (targets.size === 0) return true; // empty = every agent
     const opt = (agent && agent.options) || {};
     return targets.has(opt.provider) || targets.has(opt.model);
@@ -108,6 +145,69 @@ export function apply(ctx, config) {
   };
 
   /**
+   * Whether a request's `messages` array IS the session's current derived
+   * history — the same array contents, element for element.
+   *
+   * `deriveMessages()` returns a fresh array of SHARED, deep-frozen `Message`
+   * objects, and the loop passes that array straight into its request, so
+   * reference equality per element holds for a loop-built request and fails for
+   * a hand-assembled message list. Comparing objects (not their content) also
+   * keeps this O(n) over a handful of pointers instead of a deep walk.
+   * @param session - the live session the request names.
+   * @param messages - the request's message list.
+   * @returns whether the list is exactly the derived history.
+   */
+  const isDerivedHistory = (session, messages) => {
+    if (!Array.isArray(messages)) return false;
+    const derived = session.deriveMessages();
+    if (derived.length !== messages.length) return false;
+    for (let index = 0; index < derived.length; index++) {
+      if (derived[index] !== messages[index]) return false;
+    }
+    return true;
+  };
+
+  /**
+   * Whether this request is an ordinary in-loop conversation request, judged
+   * WITHOUT dsh-llm's `isAgentLoopRequest` marker.
+   *
+   * That marker is a WeakSet living inside ONE dsh-llm module instance. A plugin
+   * installed by path (`link:` / junction) resolves its own copy of dsh-llm
+   * through its own `node_modules`, so the loop's mark is written into a
+   * different WeakSet than the one this code would read: the predicate answers
+   * false for EVERY real request and the guard silently never fires. Object
+   * identity cannot be shared across duplicated module instances, so this
+   * checks the two properties dsh-llm documents for a loop-built request
+   * instead — both plain data, both duplication-proof:
+   *
+   *  - it arrives deep-frozen (`GenerateOptions` docs: mutation throws);
+   *  - its content is a pure function of the session log, so its `messages`
+   *    array is that session's current derived history.
+   *
+   * The remaining conditions are the guard's own preconditions: an auxiliary
+   * call (`purpose`) is not its business, and the route must be in scope.
+   *
+   * Any throw means "not eligible": a guard must never break a model call to
+   * decide it should not have guarded it.
+   * @param options - the request observed at the `llm/stream` waterfall.
+   * @param session - the live session the request names.
+   * @returns whether the guard may force this attempt to fail.
+   */
+  const eligible = (options, session) => {
+    try {
+      return (
+        options.purpose === undefined &&
+        Object.isFrozen(options) &&
+        isDerivedHistory(session, options.messages) &&
+        routeInScope(options.provider, options.model)
+      );
+    } catch (error) {
+      ctx.logger?.warn?.('epse-regeneration-guard: eligibility check failed: %o', error);
+      return false;
+    }
+  };
+
+  /**
    * Wrap one provider stream and end a framed attempt as a request failure.
    * @param options - the frozen request being streamed.
    * @param next - the downstream stream this listener wraps.
@@ -120,12 +220,7 @@ export function apply(ctx, config) {
     // guard's business, and neither owns a turn/step to retry inside.
     const session =
       options.sessionId === undefined ? undefined : ctx.sessions.get(options.sessionId);
-    if (
-      session === undefined ||
-      options.purpose !== undefined ||
-      !isAgentLoopRequest(options) ||
-      !routeInScope(options.provider, options.model)
-    ) {
+    if (session === undefined || !eligible(options, session)) {
       yield* source;
       return;
     }
@@ -140,7 +235,7 @@ export function apply(ctx, config) {
     const key = `${position.turn}:${position.step}`;
     const used = counts.get(key) || 0;
     // Budget exhausted: let the reply land normally rather than failing the turn.
-    if (used >= maxPerStep) {
+    if (used >= effectiveConfig().maxPerStep) {
       yield* source;
       return;
     }
@@ -218,7 +313,7 @@ export function apply(ctx, config) {
           mode: 'normal',
           policyKey: POLICY_KEY,
           retry,
-          maxRetries: Math.max(maxPerStep, retry),
+          maxRetries: Math.max(effectiveConfig().maxPerStep, retry),
           delayMs: 0,
           failure,
         });

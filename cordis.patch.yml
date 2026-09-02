@@ -3,6 +3,10 @@
 # guard applies to ALL agents (targetProviders empty) and forces at most two
 # regenerations per step (maxRegenerationsPerTurn: 2).
 #
+# These two knobs are ALSO user-editable on 插件 → 插件配置 via the guard's
+# settings card: the `config` here is only the composition BASE layer, and a
+# value the user sets in the UI overrides it.
+#
 # Optional per-deployment overrides:
 #   config:
 #     maxRegenerationsPerTurn: 2
