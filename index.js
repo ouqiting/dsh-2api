@@ -77,20 +77,26 @@ export function apply(ctx, config) {
   };
 
   // Expose the knobs as a user-editable settings section so the 插件配置 page
-  // can render a card for them; the base layer is this composition entry. The
-  // settings service is OPTIONAL in a deployment, so register defensively:
-  // without it the guard still works from the composition entry + defaults.
+  // can render a card for them; the base layer is this composition entry.
+  // Register through the settings service the SAME way the stock plugins do
+  // (agent-loop, web-search, terminal) — `ctx.inject(["settings"], ...)` gives
+  // a child context whose `.settings` is the live SettingsProvider; a plain
+  // `ctx.get("settings")` is not how a plugin context reaches it.
   try {
-    const settings =
-      typeof ctx.get === 'function' ? ctx.get('settings') : undefined;
-    if (settings && typeof settings.installSection === 'function') {
-      settings.installSection(ctx, SETTINGS_NAMESPACE, SETTINGS_SCHEMA, entry, {
-        setSource: (current) => {
-          configSource = current;
+    ctx.inject(['settings'], (settingsCtx) => {
+      settingsCtx.settings.installSection(
+        ctx,
+        SETTINGS_NAMESPACE,
+        SETTINGS_SCHEMA,
+        entry,
+        {
+          setSource: (current) => {
+            configSource = current;
+          },
+          onChange: () => {},
         },
-        onChange: () => {},
-      });
-    }
+      );
+    });
   } catch (error) {
     ctx.logger?.warn?.(
       'epse-regeneration-guard: settings section unavailable; using composition config: %o',
