@@ -113,7 +113,9 @@ export function apply(ctx, config) {
 
   /** The turn/step currently open in a session log, or undefined outside one. */
   const openStep = (session) => {
-    const events = session.events;
+    const events =
+      typeof session.snapshotEvents === 'function' ? session.snapshotEvents() : session.events;
+    if (!Array.isArray(events)) return undefined;
     for (let i = events.length - 1; i >= 0; i--) {
       const event = events[i];
       if (event.type === 'step/start') return { turn: event.data.turn, step: event.data.step };
@@ -295,7 +297,13 @@ export function apply(ctx, config) {
       // step's assistant node (dropping the malformed reply from the
       // transcript) and renders the regenerated reply in its place.
       try {
-        const prior = session.events.findLast(
+        const sessionEvents =
+          typeof session.snapshotEvents === 'function' ? session.snapshotEvents() : session.events;
+        if (!Array.isArray(sessionEvents) || typeof sessionEvents.findLast !== 'function') {
+          ctx.logger?.warn?.('epse-regeneration-guard: session events unavailable; skipping durable retry record');
+          return { kind: 'retry' };
+        }
+        const prior = sessionEvents.findLast(
           (event) =>
             event.type === 'llm/retry' &&
             event.data.turn === turn &&
