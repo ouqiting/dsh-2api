@@ -35,7 +35,6 @@
  */
 
 import z from '@deepseek-ai/schemastery';
-import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings';
 
 export const name = 'epse-regeneration-guard';
 export const inject = ['sessions', 'agents'];
@@ -50,7 +49,7 @@ const FAILURE_MESSAGE = 'model emitted an EPSE tool-call frame as text instead o
 const DEFAULT_MAX_PER_STEP = 2;
 
 /** User-editable settings namespace for the two knobs (插件配置 page). */
-const SETTINGS_NAMESPACE = settingsNamespace('epse-regeneration-guard');
+const SETTINGS_NAMESPACE = 'epse-regeneration-guard';
 /** Schema of the user-owned section, layered over the composition entry. */
 const SETTINGS_SCHEMA = z.object({
   maxRegenerationsPerTurn: z.number().step(1).min(1).default(DEFAULT_MAX_PER_STEP),
@@ -59,8 +58,8 @@ const SETTINGS_SCHEMA = z.object({
 
 export function apply(ctx, config) {
   const entry = config || {};
-  // Composition entry stays the default source; `installSettingsSection` swaps
-  // in a resolved-settings thunk once a settings service is mounted.
+  // Composition entry stays the default source; the settings card swaps in a
+  // resolved-settings thunk once a settings service is mounted.
   let configSource = () => entry;
 
   /** Resolve the live knobs from the current source (entry or user settings). */
@@ -78,13 +77,26 @@ export function apply(ctx, config) {
   };
 
   // Expose the knobs as a user-editable settings section so the 插件配置 page
-  // can render a card for them; the base layer is this composition entry.
-  installSettingsSection(ctx, SETTINGS_NAMESPACE, SETTINGS_SCHEMA, entry, {
-    setSource: (current) => {
-      configSource = current;
-    },
-    onChange: () => {},
-  });
+  // can render a card for them; the base layer is this composition entry. The
+  // settings service is OPTIONAL in a deployment, so register defensively:
+  // without it the guard still works from the composition entry + defaults.
+  try {
+    const settings =
+      typeof ctx.get === 'function' ? ctx.get('settings') : undefined;
+    if (settings && typeof settings.installSection === 'function') {
+      settings.installSection(ctx, SETTINGS_NAMESPACE, SETTINGS_SCHEMA, entry, {
+        setSource: (current) => {
+          configSource = current;
+        },
+        onChange: () => {},
+      });
+    }
+  } catch (error) {
+    ctx.logger?.warn?.(
+      'epse-regeneration-guard: settings section unavailable; using composition config: %o',
+      error,
+    );
+  }
 
   /** session -> Map<`turn:step`, forced failures already injected>. */
   const forced = new WeakMap();

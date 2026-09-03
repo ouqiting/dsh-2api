@@ -6,8 +6,9 @@
  *
  * Registered into `settings.plugin.item` keyed by the guard's settings
  * namespace; the configurable-plugins tab only dispatches a card when the Host
- * also serves that namespace, which `installSettingsSection` in index.js
- * provides. The two inputs write straight to the durable settings document.
+ * also serves that namespace, which the settings registration in index.js
+ * provides (via the settings service's `installSection`, when mounted). The
+ * two inputs write straight to the durable settings document.
  */
 
 window.__ModuleLoader__.load({
