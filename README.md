@@ -1,6 +1,6 @@
 # dsh-epse-regeneration-guard
 
-给 ds2api 适配用的 DeepSeek Harness（DSH）插件。当模型把 EPSE 工具调用框架（开标签 + 闭合标签成对出现）写进**文本回复**里、而不是发起原生工具调用时，agent 循环本会因「本轮没调用工具」而直接停止。本插件把这种回复**当作一次失败的模型请求**，让循环在原地重试。
+给 ds2api 适配用的 DeepSeek Harness（DSH）插件。当模型把 EPSE 工具调用框架（开标签 + 闭合标签成对出现）写进**文本回复**里、而不是发起原生工具调用时，agent 循环本会因「本轮没调用工具」而直接停止。本插件把这种回复**当作一次失败的模型请求**，让循环在原地重试。此外，你可以在设置里配置**自定义触发词**（分号分隔），回复中出现任意一个也会触发同样的打回与重生成。
 
 ## 行为
 
@@ -51,11 +51,12 @@ dsh plugin --profile web add ./<path-to>/dsh-2api
 |---|---|---|---|
 | `targetProviders` | `string[]` | `[]` | 限定命中的 provider / model 路由。**留空 = 对所有 agent 生效。** |
 | `maxRegenerationsPerTurn` | `number` | `2` | 每个 step 最多强制重生成次数，防死循环。 |
+| `customTriggerWords` | `string` | `''` | 分号分隔的自定义触发词。回复中出现**任意一个**即判定命中，走与 EPSE 框架相同的失败 + 重生成路径。 |
 
 
 ## 用户设置（插件配置页）
 
-插件自带一个设置卡片，显示在 **设置 → 插件 → 插件配置** 页（与「终端」「Agent 循环」「网页搜索」并列）。卡片提供两个输入框，保存后写入 `~/.dsh/settings.yaml` 并在下次请求立即生效（无需重启）：
+插件自带一个设置卡片，显示在 **设置 → 插件 → 插件配置** 页（与「终端」「Agent 循环」「网页搜索」并列）。卡片提供三个输入框，保存后写入 `~/.dsh/settings.yaml` 并在下次请求立即生效（无需重启）：
 
 
 `cordis.patch.yml` 里的 `config` 只是**组合层 base**；用户在 UI 里保存的值会覆盖它，留空并保存则恢复继承 base / 默认值。
@@ -67,6 +68,8 @@ dsh plugin --profile web add ./<path-to>/dsh-2api
 
 - **开标签**：前缀 `<|EPSE` / `<|epse` / `<EPSE`，后跟任意本地名、甚至本地名为空；
 - **闭合标签**：前缀 `</|EPSE` / `</|epse` / `</EPSE`，后跟任意本地名、甚至本地名为空。
+
+此外，若配置了 `customTriggerWords`（分号分隔的短语），模型回复文本中（归一化后）出现**任意一个**触发词也判定命中，与 EPSE 框架走相同的失败 + 重生成路径。
 
 仅判定模型生成的**文本 chunk**（`text-delta` 与 text 型 `block-end`）；不处理写入文件、工具结果、工具参数、reasoning、日志事件。
 
@@ -94,7 +97,7 @@ dsh plugin --profile web add ./<path-to>/dsh-2api
 node test.mjs
 ```
 
-用真实 `Session`（表层与不变量规则原样生效）加最小假 Cordis context 驱动两个 listener，覆盖：坏回复转为被认领的请求失败并写下持久重试记录、干净回复与外部失败码原样放行、每步预算封顶、`targetProviders` 收窄范围、以及辅助调用 / 未冻结 / 手搭消息列表 / 无 session / 无打开 step 的请求原样放行。
+用真实 `Session`（表层与不变量规则原样生效）加最小假 Cordis context 驱动两个 listener，覆盖：坏回复转为被认领的请求失败并写下持久重试记录、干净回复与外部失败码原样放行、每步预算封顶、`targetProviders` 收窄范围、自定义触发词命中/未命中、以及辅助调用 / 未冻结 / 手搭消息列表 / 无 session / 无打开 step 的请求原样放行。
 
 
 ## 已知限制

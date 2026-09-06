@@ -79,6 +79,10 @@ async function drain(iterable) {
   return out;
 }
 
+/** Read the session event log, tolerating both snapshotEvents() and .events. */
+const eventsOf = (session) =>
+  typeof session.snapshotEvents === 'function' ? session.snapshotEvents() : session.events;
+
 const framedChunks = [
   { type: 'block-start', index: 0, blockType: 'text' },
   { type: 'text-delta', index: 0, text: 'sure, calling <|EPSE' },
@@ -138,8 +142,8 @@ async function* stream(chunks) {
 
   assert.deepEqual(decision, { kind: 'retry' }, 'the guard must claim its own failure and retry');
 
-  const retry = session.events.findLast((event) => event.type === 'llm/retry');
-  const started = session.events.findLast((event) => event.type === 'llm/retry-started');
+  const retry = eventsOf(session).findLast((event) => event.type === 'llm/retry');
+  const started = eventsOf(session).findLast((event) => event.type === 'llm/retry-started');
   assert.ok(retry, 'a durable llm/retry record must exist');
   assert.equal(retry.data.turn, 1);
   assert.equal(retry.data.step, 1);
@@ -151,7 +155,7 @@ async function* stream(chunks) {
   assert.equal(started.data.retry, 1);
 
   assert.ok(
-    !session.events.some((event) => event.type === 'assistant/message'),
+    !eventsOf(session).some((event) => event.type === 'assistant/message'),
     'the malformed reply never becomes a surface message',
   );
   assert.equal(session.deriveMessages().length, 1, 'model history keeps only the user request');
@@ -249,12 +253,12 @@ async function* stream(chunks) {
       () => Promise.resolve(undefined),
     );
     assert.deepEqual(decision, { kind: 'retry' });
-    const retry = session.events.findLast((event) => event.type === 'llm/retry');
+    const retry = eventsOf(session).findLast((event) => event.type === 'llm/retry');
     assert.equal(retry.data.retry, expected, 'retry numbering must increment on one chain');
     assert.ok(retry.data.maxRetries >= expected, 'maxRetries must cover the attempt number');
   }
   const chain = new Set(
-    session.events.filter((e) => e.type === 'llm/retry').map((e) => e.data.retryId),
+    eventsOf(session).filter((e) => e.type === 'llm/retry').map((e) => e.data.retryId),
   );
   assert.equal(chain.size, 1, 'both attempts share one retryId chain');
 
@@ -348,6 +352,33 @@ async function* stream(chunks) {
   );
 
   console.log('ok  a request outside an open step passes through');
+}
+
+// ------------------------------------------- configured trigger words hit/miss
+{
+  const session = Session.create(SessionId('sess-trigger'));
+  const { ctx, listeners } = fakeContext(session);
+  apply(ctx, { customTriggerWords: 'bad word;危险;fatal' });
+  openTurnAndStep(session, 1, 1);
+
+  const guardStream = listeners['llm/stream'][0];
+
+  // 回复中包含触发词 "bad word" -> 与 EPSE 框架一样判定为失败并打回。
+  const triggerChunks = [
+    { type: 'block-start', index: 0, blockType: 'text' },
+    { type: 'text-delta', index: 0, text: 'this reply contains the bad word here' },
+    { type: 'block-end', index: 0, block: { type: 'text', text: 'this reply contains the bad word here' } },
+    { type: 'finish', reason: { kind: 'stop' } },
+  ];
+  const hit = await drain(guardStream(request(session), () => stream(triggerChunks)));
+  assert.equal(hit.at(-1).reason.kind, 'error', 'a reply containing a trigger word must fail');
+  assert.equal(hit.at(-1).reason.failure.code, 'EPSE_TOOL_CALL_FRAME');
+
+  // 回复不包含任何触发词 -> 原样放行。
+  const miss = await drain(guardStream(request(session), () => stream(cleanChunks)));
+  assert.deepEqual(miss, cleanChunks, 'a reply without any trigger word passes through');
+
+  console.log('ok  configured trigger words hit/miss follow the same failure path');
 }
 
 console.log('\nall checks passed');

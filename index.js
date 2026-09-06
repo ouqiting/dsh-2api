@@ -44,16 +44,20 @@ const FAILURE_CODE = 'EPSE_TOOL_CALL_FRAME';
 /** Canonical policy identity separating this guard's retry chains from real ones. */
 const POLICY_KEY = 'epse-regeneration-guard/v1';
 /** Human-readable failure recorded with every claimed attempt. */
-const FAILURE_MESSAGE = 'model emitted an EPSE tool-call frame as text instead of a native tool call';
+const FAILURE_MESSAGE =
+  'model reply matched an EPSE tool-call frame or a configured trigger word';
 /** Forced regenerations allowed per step when the config does not say otherwise. */
 const DEFAULT_MAX_PER_STEP = 2;
 
-/** User-editable settings namespace for the two knobs (插件配置 page). */
+/** User-editable settings namespace for the knobs (插件配置 page). */
 const SETTINGS_NAMESPACE = 'epse-regeneration-guard';
 /** Schema of the user-owned section, layered over the composition entry. */
 const SETTINGS_SCHEMA = z.object({
   maxRegenerationsPerTurn: z.number().step(1).min(1).default(DEFAULT_MAX_PER_STEP),
   targetProviders: z.array(z.string()).default([]),
+  // Semicolon-separated phrases; any one appearing in the model's text reply
+  // also fails the attempt, on top of the EPSE frame rule.
+  customTriggerWords: z.string().default(''),
 });
 
 export function apply(ctx, config) {
@@ -65,6 +69,13 @@ export function apply(ctx, config) {
   /** Resolve the live knobs from the current source (entry or user settings). */
   const effectiveConfig = () => {
     const cfg = configSource() || {};
+    // Split the semicolon-separated trigger-word string into a non-empty list.
+    // Both ASCII `;` and full-width `；` are accepted as separators.
+    const rawWords = typeof cfg.customTriggerWords === 'string' ? cfg.customTriggerWords : '';
+    const triggerWords = rawWords
+      .split(/[;；]/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
     return {
       // Provider/model routes to restrict to; empty set = apply to ALL agents.
       targets: new Set(Array.isArray(cfg.targetProviders) ? cfg.targetProviders : []),
@@ -73,6 +84,8 @@ export function apply(ctx, config) {
         typeof cfg.maxRegenerationsPerTurn === 'number' && cfg.maxRegenerationsPerTurn >= 1
           ? Math.floor(cfg.maxRegenerationsPerTurn)
           : DEFAULT_MAX_PER_STEP,
+      // Custom trigger words: any one appearing in the reply also fails the attempt.
+      triggerWords,
     };
   };
 
@@ -115,6 +128,18 @@ export function apply(ctx, config) {
   const hasEpseFrame = (text) => {
     const t = normalize(text);
     return /<\|?epse/.test(t) && /<\/\|?epse/.test(t);
+  };
+
+  // Rule: ANY configured custom trigger word (normalized) appears in the text.
+  // Each trigger word is matched by substring after NFKC + lowercase, so
+  // full-width forms and case variants are treated identically to the EPSE rule.
+  const hasTriggerWord = (text, words) => {
+    if (!words || words.length === 0) return false;
+    const t = normalize(text);
+    return words.some((word) => {
+      const w = normalize(word);
+      return w !== '' && t.includes(w);
+    });
   };
 
   const routeInScope = (provider, model) => {
@@ -261,25 +286,28 @@ export function apply(ctx, config) {
     }
 
     let text = '';
-    let framed = false;
+    let shouldFail = false;
     let finished = false;
+    const { triggerWords } = effectiveConfig();
     const failureFinish = () => ({
       type: 'finish',
       reason: { kind: 'error', failure: { message: FAILURE_MESSAGE, code: FAILURE_CODE } },
     });
     for await (const chunk of source) {
-      if (!framed) {
+      if (!shouldFail) {
         const added = textOf(chunk);
         if (added !== '') {
           text += added;
-          framed = hasEpseFrame(text);
+          // Either an EPSE tool-call frame or ANY configured trigger word
+          // fails the attempt; both share the same failure + retry path.
+          shouldFail = hasEpseFrame(text) || hasTriggerWord(text, triggerWords);
         }
       }
       // Replace only a plain successful finish. `tool-calls` means the model DID
       // issue a native call, which is the correct format and never this guard's
       // business; an already-failed, aborted, or truncated attempt keeps its own
       // outcome and its own recovery owner.
-      if (framed && chunk.type === 'finish' && chunk.reason?.kind === 'stop') {
+      if (shouldFail && chunk.type === 'finish' && chunk.reason?.kind === 'stop') {
         counts.set(key, used + 1);
         yield failureFinish();
         return;
@@ -290,7 +318,7 @@ export function apply(ctx, config) {
     // A stream that ended without any terminal finish would be assembled as a
     // successful `stop`, landing the malformed reply. Close it as this guard's
     // failure instead.
-    if (framed && !finished) {
+    if (shouldFail && !finished) {
       counts.set(key, used + 1);
       yield failureFinish();
     }

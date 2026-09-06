@@ -90,6 +90,8 @@ window.__ModuleLoader__.load({
       maxRegenerationsHint: "How many times one step may be forced to regenerate after a framed reply (min 1).",
       targetProviders: "Target providers / models",
       targetProvidersHint: "Comma-separated provider or model names. Leave blank to apply to every agent.",
+      customTriggerWords: "Custom trigger words",
+      customTriggerWordsHint: "Semicolon-separated phrases. If any appears in the reply, the step regenerates.",
       unsaved: "Unsaved",
       readOnly: "This deployment stores settings read-only.",
       expand: "Show settings",
@@ -109,6 +111,8 @@ window.__ModuleLoader__.load({
       maxRegenerationsHint: "模型把工具调用框架写进文本时，同一 step 最多强制重生成多少次（最小 1）。",
       targetProviders: "限定的 provider / model",
       targetProvidersHint: "逗号分隔的 provider 或 model 名。留空表示对所有 agent 生效。",
+      customTriggerWords: "自定义触发词",
+      customTriggerWordsHint: "分号分隔的短语。回复中出现任意一个即触发重生成。",
       unsaved: "未保存",
       readOnly: "本部署的设置为只读。",
       expand: "展开设置",
@@ -125,6 +129,7 @@ window.__ModuleLoader__.load({
     const cls = (...parts) => parts.filter(Boolean).join(" ");
     const formatMax = (value) => (value == null ? "" : String(value));
     const formatProviders = (value) => (Array.isArray(value) ? value.join(", ") : "");
+    const formatTriggerWords = (value) => (typeof value === "string" ? value : "");
     const parseMax = (text) => {
       if (text.trim() === "") return { kind: "clear" };
       const n = Number(text);
@@ -135,6 +140,10 @@ window.__ModuleLoader__.load({
       const parts = text.split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean);
       return { kind: "set", value: parts };
     };
+    const parseTriggerWords = (text) => {
+      if (text.trim() === "") return { kind: "clear" };
+      return { kind: "set", value: text };
+    };
 
     class CardController {
       constructor(scope) {
@@ -143,7 +152,11 @@ window.__ModuleLoader__.load({
         this.saving = false;
         this.failed = false;
         this.listeners = new Set();
-        this.parsers = { maxRegenerationsPerTurn: parseMax, targetProviders: parseProviders };
+        this.parsers = {
+          maxRegenerationsPerTurn: parseMax,
+          targetProviders: parseProviders,
+          customTriggerWords: parseTriggerWords,
+        };
         this.state = this.compute();
         this.unsubscribe = scope.subscribe(() => {
           this.state = this.compute();
@@ -163,16 +176,20 @@ window.__ModuleLoader__.load({
         const provText = Object.hasOwn(staged, "targetProviders") ? staged.targetProviders : formatProviders(value.targetProviders);
         const provOverridden = Object.hasOwn(staged, "targetProviders") || Object.hasOwn(user, "targetProviders");
         const provInvalid = false;
+        const triggerText = Object.hasOwn(staged, "customTriggerWords") ? staged.customTriggerWords : formatTriggerWords(value.customTriggerWords);
+        const triggerOverridden = Object.hasOwn(staged, "customTriggerWords") || Object.hasOwn(user, "customTriggerWords");
+        const triggerInvalid = false;
         const dirty = Object.keys(staged).length > 0;
         return {
           available,
           writable,
           dirty,
-          invalid: maxInvalid || provInvalid,
+          invalid: maxInvalid || provInvalid || triggerInvalid,
           saving: this.saving,
           failed: this.failed,
           maxRegenerationsPerTurn: { text: maxText, overridden: maxOverridden, invalid: maxInvalid },
           targetProviders: { text: provText, overridden: provOverridden, invalid: provInvalid },
+          customTriggerWords: { text: triggerText, overridden: triggerOverridden, invalid: triggerInvalid },
         };
       }
       getSnapshot() { return this.state; }
@@ -265,6 +282,19 @@ window.__ModuleLoader__.load({
         ]),
         open ? h("div", { className: c.body }, [
           !state.writable ? h("p", { className: c.readOnly, role: "status" }, props.t("readOnly")) : null,
+          h(ValueField, {
+            id: "plugin-config-epse-triggers",
+            label: props.t("customTriggerWords"),
+            hint: props.t("customTriggerWordsHint"),
+            overriddenLabel: props.t("overridden"),
+            resetLabel: props.t("reset"),
+            invalidLabel: "",
+            numeric: false,
+            disabled: !state.writable,
+            ...state.customTriggerWords,
+            onEdit: (text) => props.edit("customTriggerWords", text),
+            onReset: () => props.resetField("customTriggerWords"),
+          }),
           h(ValueField, {
             id: "plugin-config-epse-max",
             label: props.t("maxRegenerations"),
