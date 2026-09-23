@@ -4,37 +4,29 @@
  * client module loader and draws its own card, mirroring the stock Terminal /
  * Agent loop / Web search cards so the layout and controls look identical.
  *
- * Registered as a tab inside Settings → Built-in plugins, keyed by the guard's
- * settings namespace; it only appears while the Host serves that namespace,
- * which index.js provides by exporting the `Config` schema the settings service
- * derives the form from. The inputs write straight to the durable settings
- * document.
+ * Registered as the bundle's own configuration on its page in the Plugins
+ * panel, keyed by the package name; it only appears while the Host serves the
+ * guard's settings namespace, which index.js provides by exporting the `Config`
+ * schema the settings service derives the form from. The page asks for
+ * `view: "page"` (the form) and, when a surface wants it, `view: "summary"`
+ * (the one-liner). The inputs write straight to the durable settings document.
  */
 
 window.__ModuleLoader__.load({
   id: "@ds2api/dsh-epse-regeneration-guard",
   factory: (require) => {
     const React = require("react");
-    const { createElement: h, useState } = React;
-    const { IconChevronDownOutline14 } = require("@deepseek-ai/dsh-client-ui-primitives");
+    const { createElement: h } = React;
 
     const NS = "epse-regeneration-guard";
     const LOCALE_NS = "epse-regeneration-guard";
+    // The bundle package that ships this row; the Plugins page keys a bundle's
+    // own configuration by its package name.
+    const BUNDLE = "@ds2api/dsh-epse-regeneration-guard";
 
     const cardCss = `
-.epg_card{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);border-radius:12px;list-style:none;transition:border-color .16s,background .16s}
-.epg_card:hover{border-color:var(--dsw-alias-label-dimmed)}
-.epg_cardOpen{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-label-dimmed)}
-.epg_header{appearance:none;width:100%;font:inherit;color:inherit;text-align:left;cursor:pointer;background:0 0;border:0;border-radius:12px;align-items:center;gap:12px;padding:14px 16px;display:flex}
-.epg_header:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
-.epg_headText{flex-direction:column;flex:1;gap:4px;min-width:0;display:flex}
-.epg_name{color:var(--dsw-alias-label-primary);font-size:15px;font-weight:600;line-height:1.4}
-.epg_description{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.5}
-.epg_chevron{color:var(--dsw-alias-label-tertiary);flex:none;transition:transform .16s}
-.epg_chevronOpen{transform:rotate(180deg)}
-.epg_body{border-top:1px solid var(--dsw-alias-border-l2);margin:0 16px;padding-bottom:8px}
+.epg_card{list-style:none}
 .epg_readOnly{color:var(--dsw-alias-label-tertiary);margin:12px 0 0;font-size:12px;line-height:1.5}
-.epg_pending{white-space:nowrap;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-secondary);border-radius:999px;flex:none;padding:1px 8px;font-size:11px;font-weight:500;line-height:17px}
 .epg_footer{border-top:1px solid var(--dsw-alias-border-l2);justify-content:flex-end;align-items:center;gap:8px;padding:12px 0 4px;display:flex}
 .epg_failed{min-width:0;color:var(--dsw-alias-label-error);flex:1;margin:0;font-size:12px;line-height:1.5}
 .epg_discard,.epg_save{appearance:none;font:inherit;cursor:pointer;border:1px solid #0000;border-radius:8px;padding:5px 14px;font-size:13px;line-height:1.5}
@@ -72,10 +64,8 @@ window.__ModuleLoader__.load({
     }
 
     const c = {
-      card: "epg_card", cardOpen: "epg_cardOpen", header: "epg_header",
-      headText: "epg_headText", name: "epg_name", description: "epg_description",
-      chevron: "epg_chevron", chevronOpen: "epg_chevronOpen", body: "epg_body",
-      readOnly: "epg_readOnly", pending: "epg_pending", footer: "epg_footer",
+      card: "epg_card",
+      readOnly: "epg_readOnly", footer: "epg_footer",
       failed: "epg_failed", discard: "epg_discard", save: "epg_save",
       field: "epg_field", head: "epg_head", label: "epg_label",
       badges: "epg_badges", badge: "epg_badge", badgeMuted: "epg_badgeMuted",
@@ -260,73 +250,58 @@ window.__ModuleLoader__.load({
     }
 
     function EpseGuardCard(props) {
-      const [open, setOpen] = useState(true);
       const state = props.useEpseCard((snapshot) => snapshot);
+      // The Plugins page asks for the card's one-liner, then mounts the same
+      // entry as the form on the plugin's own page.
+      if (props.view === "summary") return props.t("description");
       if (!state.available) return null;
-      const title = props.t("title");
       const blocked = !state.dirty || state.invalid || state.saving;
-      return h("div", { className: cls(c.card, open && c.cardOpen) }, [
-        h("button", {
-          type: "button",
-          className: c.header,
-          "aria-expanded": open,
-          "aria-label": `${props.t(open ? "collapse" : "expand")}: ${title}`,
-          onClick: () => setOpen(!open),
-        }, [
-          h("span", { className: c.headText }, [
-            h("span", { className: c.name }, title),
-            h("span", { className: c.description }, props.t("description")),
-          ]),
-          state.dirty ? h("span", { className: c.pending }, props.t("unsaved")) : null,
-          h(IconChevronDownOutline14, { className: cls(c.chevron, open && c.chevronOpen) }),
+      return h("div", { className: c.card }, [
+        !state.writable ? h("p", { className: c.readOnly, role: "status" }, props.t("readOnly")) : null,
+        h(ValueField, {
+          id: "plugin-config-epse-triggers",
+          label: props.t("customTriggerWords"),
+          hint: props.t("customTriggerWordsHint"),
+          overriddenLabel: props.t("overridden"),
+          resetLabel: props.t("reset"),
+          invalidLabel: "",
+          numeric: false,
+          disabled: !state.writable,
+          ...state.customTriggerWords,
+          onEdit: (text) => props.edit("customTriggerWords", text),
+          onReset: () => props.resetField("customTriggerWords"),
+        }),
+        h(ValueField, {
+          id: "plugin-config-epse-max",
+          label: props.t("maxRegenerations"),
+          hint: props.t("maxRegenerationsHint"),
+          overriddenLabel: props.t("overridden"),
+          resetLabel: props.t("reset"),
+          invalidLabel: props.t("invalidNumber"),
+          numeric: true,
+          disabled: !state.writable,
+          ...state.maxRegenerationsPerTurn,
+          onEdit: (text) => props.edit("maxRegenerationsPerTurn", text),
+          onReset: () => props.resetField("maxRegenerationsPerTurn"),
+        }),
+        h(ValueField, {
+          id: "plugin-config-epse-targets",
+          label: props.t("targetProviders"),
+          hint: props.t("targetProvidersHint"),
+          overriddenLabel: props.t("overridden"),
+          resetLabel: props.t("reset"),
+          invalidLabel: "",
+          numeric: false,
+          disabled: !state.writable,
+          ...state.targetProviders,
+          onEdit: (text) => props.edit("targetProviders", text),
+          onReset: () => props.resetField("targetProviders"),
+        }),
+        h("div", { className: c.footer }, [
+          state.failed ? h("p", { className: c.failed, role: "status" }, props.t("saveFailed")) : null,
+          h("button", { type: "button", className: c.discard, disabled: !state.dirty || state.saving, onClick: props.discard }, props.t("discard")),
+          h("button", { type: "button", className: c.save, disabled: blocked, onClick: props.save }, props.t(state.saving ? "saving" : "save")),
         ]),
-        open ? h("div", { className: c.body }, [
-          !state.writable ? h("p", { className: c.readOnly, role: "status" }, props.t("readOnly")) : null,
-          h(ValueField, {
-            id: "plugin-config-epse-triggers",
-            label: props.t("customTriggerWords"),
-            hint: props.t("customTriggerWordsHint"),
-            overriddenLabel: props.t("overridden"),
-            resetLabel: props.t("reset"),
-            invalidLabel: "",
-            numeric: false,
-            disabled: !state.writable,
-            ...state.customTriggerWords,
-            onEdit: (text) => props.edit("customTriggerWords", text),
-            onReset: () => props.resetField("customTriggerWords"),
-          }),
-          h(ValueField, {
-            id: "plugin-config-epse-max",
-            label: props.t("maxRegenerations"),
-            hint: props.t("maxRegenerationsHint"),
-            overriddenLabel: props.t("overridden"),
-            resetLabel: props.t("reset"),
-            invalidLabel: props.t("invalidNumber"),
-            numeric: true,
-            disabled: !state.writable,
-            ...state.maxRegenerationsPerTurn,
-            onEdit: (text) => props.edit("maxRegenerationsPerTurn", text),
-            onReset: () => props.resetField("maxRegenerationsPerTurn"),
-          }),
-          h(ValueField, {
-            id: "plugin-config-epse-targets",
-            label: props.t("targetProviders"),
-            hint: props.t("targetProvidersHint"),
-            overriddenLabel: props.t("overridden"),
-            resetLabel: props.t("reset"),
-            invalidLabel: "",
-            numeric: false,
-            disabled: !state.writable,
-            ...state.targetProviders,
-            onEdit: (text) => props.edit("targetProviders", text),
-            onReset: () => props.resetField("targetProviders"),
-          }),
-          h("div", { className: c.footer }, [
-            state.failed ? h("p", { className: c.failed, role: "status" }, props.t("saveFailed")) : null,
-            h("button", { type: "button", className: c.discard, disabled: !state.dirty || state.saving, onClick: props.discard }, props.t("discard")),
-            h("button", { type: "button", className: c.save, disabled: blocked, onClick: props.save }, props.t(state.saving ? "saving" : "save")),
-          ]),
-        ]) : null,
       ]);
     }
 
@@ -337,13 +312,11 @@ window.__ModuleLoader__.load({
       const scope = ctx.configForms.get(NS);
       const controller = new CardController(scope);
       ctx.effect(() => () => controller.dispose(), "epse-regeneration-guard: card controller");
-      // One tab in Settings → Built-in plugins, registered only while the Host
-      // serves this namespace, so a deployment without the guard shows no trace.
-      ctx.effect(() => ctx.configForms.whileServed([NS], () => ctx.slots.inject("settings.plugins.tab", () => ctx.slots.register({
-        name: "settings.plugins.tab",
-        id: NS,
-        order: 50,
-        label: () => ctx.locale.bind(LOCALE_NS)("title"),
+      // The bundle's own configuration, on the plugin's page in the Plugins
+      // panel; registered only while the Host serves this namespace.
+      ctx.effect(() => ctx.configForms.whileServed([NS], () => ctx.slots.inject("plugins.bundle.config", () => ctx.slots.register({
+        name: "plugins.bundle.config",
+        key: BUNDLE,
         locale: LOCALE_NS,
         inject: () => controller.inject(),
       }, EpseGuardCard))), "epse-regeneration-guard: settings card");

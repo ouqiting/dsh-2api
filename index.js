@@ -49,13 +49,16 @@ const FAILURE_MESSAGE =
 /** Forced regenerations allowed per step when the config does not say otherwise. */
 const DEFAULT_MAX_PER_STEP = 2;
 
-/** Schema of the user-owned section, layered over the composition entry. */
+/** Schema of the user-owned section, layered over the composition entry.
+ * Every field is volatile: dsh-settings exposes only volatile Config fields as
+ * an editable, live-applying form, and hands each to `apply` as a ref read
+ * through `.get()`. */
 const SETTINGS_SCHEMA = z.object({
-  maxRegenerationsPerTurn: z.number().step(1).min(1).default(DEFAULT_MAX_PER_STEP),
-  targetProviders: z.array(z.string()).default([]),
+  maxRegenerationsPerTurn: z.number().step(1).min(1).default(DEFAULT_MAX_PER_STEP).volatile(),
+  targetProviders: z.array(z.string()).default([]).volatile(),
   // Semicolon-separated phrases; any one appearing in the model's text reply
   // also fails the attempt, on top of the EPSE frame rule.
-  customTriggerWords: z.string().default(''),
+  customTriggerWords: z.string().default('').volatile(),
 });
 
 // Declaring `Config` is what makes these knobs a user-editable section: the
@@ -71,24 +74,27 @@ export function apply(ctx, config) {
   // resolved-settings thunk once a settings service is mounted.
   let configSource = () => entry;
 
+  /** A volatile Config field arrives as a ref; a plain value passes through. */
+  const read = (value) =>
+    value !== null && typeof value === 'object' && typeof value.get === 'function' ? value.get() : value;
+
   /** Resolve the live knobs from the current source (entry or user settings). */
   const effectiveConfig = () => {
     const cfg = configSource() || {};
     // Split the semicolon-separated trigger-word string into a non-empty list.
     // Both ASCII `;` and full-width `；` are accepted as separators.
-    const rawWords = typeof cfg.customTriggerWords === 'string' ? cfg.customTriggerWords : '';
-    const triggerWords = rawWords
+    const rawWords = read(cfg.customTriggerWords);
+    const triggerWords = (typeof rawWords === 'string' ? rawWords : '')
       .split(/[;；]/)
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
+    // Provider/model routes to restrict to; empty set = apply to ALL agents.
+    const targets = read(cfg.targetProviders);
+    // Max forced regenerations per (session, turn, step) to avoid infinite loops.
+    const max = read(cfg.maxRegenerationsPerTurn);
     return {
-      // Provider/model routes to restrict to; empty set = apply to ALL agents.
-      targets: new Set(Array.isArray(cfg.targetProviders) ? cfg.targetProviders : []),
-      // Max forced regenerations per (session, turn, step) to avoid infinite loops.
-      maxPerStep:
-        typeof cfg.maxRegenerationsPerTurn === 'number' && cfg.maxRegenerationsPerTurn >= 1
-          ? Math.floor(cfg.maxRegenerationsPerTurn)
-          : DEFAULT_MAX_PER_STEP,
+      targets: new Set(Array.isArray(targets) ? targets : []),
+      maxPerStep: typeof max === 'number' && max >= 1 ? Math.floor(max) : DEFAULT_MAX_PER_STEP,
       // Custom trigger words: any one appearing in the reply also fails the attempt.
       triggerWords,
     };
