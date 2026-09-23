@@ -4,11 +4,11 @@
  * client module loader and draws its own card, mirroring the stock Terminal /
  * Agent loop / Web search cards so the layout and controls look identical.
  *
- * Registered into `settings.plugin.item` keyed by the guard's settings
- * namespace; the configurable-plugins tab only dispatches a card when the Host
- * also serves that namespace, which the settings registration in index.js
- * provides (via the settings service's `installSection`, when mounted). The
- * two inputs write straight to the durable settings document.
+ * Registered into the Plugins page's `plugins.item` slot keyed by the guard's
+ * settings namespace; the page only dispatches a card while the Host serves
+ * that namespace, which index.js provides by exporting the `Config` schema the
+ * settings service derives the form from. The two inputs write straight to the
+ * durable settings document.
  */
 
 window.__ModuleLoader__.load({
@@ -330,19 +330,23 @@ window.__ModuleLoader__.load({
       ]);
     }
 
-    const inject = ["slots", "settingsScope", "locale"];
+    const inject = ["slots", "locale", "configForms"];
 
     function apply(ctx) {
       ctx.effect(() => ctx.locale.register(LOCALE_NS, { zh, en }), "epse-regeneration-guard: locale");
-      const scope = ctx.settingsScope.bind({ namespace: NS });
+      const scope = ctx.configForms.get(NS);
       const controller = new CardController(scope);
       ctx.effect(() => () => controller.dispose(), "epse-regeneration-guard: card controller");
-      ctx.effect(() => ctx.slots.inject("settings.plugin.item", () => ctx.slots.register({
-        name: "settings.plugin.item",
-        key: NS,
+      // Register into the Plugins page only while the Host serves this
+      // namespace, so a deployment without the guard shows no trace of the card.
+      ctx.effect(() => ctx.configForms.whileServed([NS], () => ctx.slots.inject("plugins.item", () => ctx.slots.register({
+        name: "plugins.item",
+        id: NS,
+        order: 50,
+        label: () => ctx.locale.bind(LOCALE_NS)("title"),
         locale: LOCALE_NS,
         inject: () => controller.inject(),
-      }, EpseGuardCard)), "epse-regeneration-guard: settings card");
+      }, EpseGuardCard))), "epse-regeneration-guard: settings card");
     }
 
     return { apply, inject };

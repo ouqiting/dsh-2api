@@ -49,8 +49,6 @@ const FAILURE_MESSAGE =
 /** Forced regenerations allowed per step when the config does not say otherwise. */
 const DEFAULT_MAX_PER_STEP = 2;
 
-/** User-editable settings namespace for the knobs (插件配置 page). */
-const SETTINGS_NAMESPACE = 'epse-regeneration-guard';
 /** Schema of the user-owned section, layered over the composition entry. */
 const SETTINGS_SCHEMA = z.object({
   maxRegenerationsPerTurn: z.number().step(1).min(1).default(DEFAULT_MAX_PER_STEP),
@@ -59,6 +57,13 @@ const SETTINGS_SCHEMA = z.object({
   // also fails the attempt, on top of the EPSE frame rule.
   customTriggerWords: z.string().default(''),
 });
+
+// Declaring `Config` is what makes these knobs a user-editable section: the
+// settings service derives the plugin-config form from this schema, keyed by
+// the profile entry id `epse-regeneration-guard`, and the client card binds to
+// the same namespace. The composition entry's `config` stays the base layer; a
+// value the user saves overrides it.
+export const Config = SETTINGS_SCHEMA;
 
 export function apply(ctx, config) {
   const entry = config || {};
@@ -89,33 +94,9 @@ export function apply(ctx, config) {
     };
   };
 
-  // Expose the knobs as a user-editable settings section so the 插件配置 page
-  // can render a card for them; the base layer is this composition entry.
-  // Register through the settings service the SAME way the stock plugins do
-  // (agent-loop, web-search, terminal) — `ctx.inject(["settings"], ...)` gives
-  // a child context whose `.settings` is the live SettingsProvider; a plain
-  // `ctx.get("settings")` is not how a plugin context reaches it.
-  try {
-    ctx.inject(['settings'], (settingsCtx) => {
-      settingsCtx.settings.installSection(
-        ctx,
-        SETTINGS_NAMESPACE,
-        SETTINGS_SCHEMA,
-        entry,
-        {
-          setSource: (current) => {
-            configSource = current;
-          },
-          onChange: () => {},
-        },
-      );
-    });
-  } catch (error) {
-    ctx.logger?.warn?.(
-      'epse-regeneration-guard: settings section unavailable; using composition config: %o',
-      error,
-    );
-  }
+  // The plugin-config form is derived from the exported `Config` schema above,
+  // so there is no section to register here: `config` is already the resolved
+  // section, and the client card reads the same entry through `configForms`.
 
   /** session -> Map<`turn:step`, forced failures already injected>. */
   const forced = new WeakMap();
