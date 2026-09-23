@@ -4,11 +4,11 @@
  * client module loader and draws its own card, mirroring the stock Terminal /
  * Agent loop / Web search cards so the layout and controls look identical.
  *
- * Registered into the Plugins page's `plugins.item` slot keyed by the guard's
- * settings namespace; the page only dispatches a card while the Host serves
- * that namespace, which index.js provides by exporting the `Config` schema the
- * settings service derives the form from. The two inputs write straight to the
- * durable settings document.
+ * Registered as a tab inside Settings → Built-in plugins, keyed by the guard's
+ * settings namespace; it only appears while the Host serves that namespace,
+ * which index.js provides by exporting the `Config` schema the settings service
+ * derives the form from. The inputs write straight to the durable settings
+ * document.
  */
 
 window.__ModuleLoader__.load({
@@ -260,12 +260,12 @@ window.__ModuleLoader__.load({
     }
 
     function EpseGuardCard(props) {
-      const [open, setOpen] = useState(false);
+      const [open, setOpen] = useState(true);
       const state = props.useEpseCard((snapshot) => snapshot);
       if (!state.available) return null;
       const title = props.t("title");
       const blocked = !state.dirty || state.invalid || state.saving;
-      return h("li", { className: cls(c.card, open && c.cardOpen) }, [
+      return h("div", { className: cls(c.card, open && c.cardOpen) }, [
         h("button", {
           type: "button",
           className: c.header,
@@ -337,10 +337,10 @@ window.__ModuleLoader__.load({
       const scope = ctx.configForms.get(NS);
       const controller = new CardController(scope);
       ctx.effect(() => () => controller.dispose(), "epse-regeneration-guard: card controller");
-      // Register into the Plugins page only while the Host serves this
-      // namespace, so a deployment without the guard shows no trace of the card.
-      ctx.effect(() => ctx.configForms.whileServed([NS], () => ctx.slots.inject("plugins.item", () => ctx.slots.register({
-        name: "plugins.item",
+      // One tab in Settings → Built-in plugins, registered only while the Host
+      // serves this namespace, so a deployment without the guard shows no trace.
+      ctx.effect(() => ctx.configForms.whileServed([NS], () => ctx.slots.inject("settings.plugins.tab", () => ctx.slots.register({
+        name: "settings.plugins.tab",
         id: NS,
         order: 50,
         label: () => ctx.locale.bind(LOCALE_NS)("title"),
